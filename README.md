@@ -3,7 +3,7 @@
 Perfrom a certificate request to a Windows Certification Authority using
 DCE/RPC with Kerberos authentication.
 
-# Building
+## Building
 
 The [`dcerpc`](https://github.com/dcerpc/dcerpc) library is required for
 building this program. You need to build it with the `--enable-gss_negotiate`
