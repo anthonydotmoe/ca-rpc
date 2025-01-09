@@ -6,7 +6,7 @@ DCE/RPC with Kerberos authentication.
 ## Features
 
 - [x] Submits a certificate request to a CA
-- [ ] Saves the issued certificate
+- [x] Saves the issued certificate
 - [ ] Accepts Base64 formatted CSR files
 
 ## Building
