@@ -53,7 +53,10 @@ target_include_directories(ms-icpr PUBLIC "${GENERATED_DIR}")
 add_executable(ca-rpc
     src/main.cpp
     src/cert_trans_blob.cpp
+    src/req_input.cpp
 )
+
+find_package(OpenSSL REQUIRED)
 
 # C++17 support for <filesystem>
 target_compile_features(ca-rpc PRIVATE cxx_std_17)
@@ -62,4 +65,4 @@ target_compile_features(ca-rpc PRIVATE cxx_std_17)
 target_include_directories(ca-rpc PRIVATE src)
 
 # Link libraries
-target_link_libraries(ca-rpc PRIVATE "/usr/local/lib/libdcerpc.so" ms-icpr)
+target_link_libraries(ca-rpc PRIVATE "/usr/local/lib/libdcerpc.so" ms-icpr OpenSSL::SSL)

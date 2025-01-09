@@ -16,6 +16,7 @@
 
 #include "requestflags.h"
 #include "cert_trans_blob.h"
+#include "req_input.h"
 
 enum class CrDisposition {
     CR_DISP_INCOMPLETE = 0,
@@ -49,7 +50,7 @@ std::string dispositionToString(DWORD dwDisposition) {
 }
 
 static void usage(const std::string& progname) {
-    std::cerr << "usage: " << progname << " -s <server dns name> -c <name of CA> -t <template name> -r <csr path> [-f]" << std::endl << std::endl;
+    std::cerr << "usage: " << progname << " -s <server dns name> -c <name of CA> -t <template name> -r <csr path>" << std::endl << std::endl;
     //                     1         2         3         4         5         6         7         8
     //            12345678901234567890123456789012345678901234567890123456789012345678901234567890
     std::cerr << "This utility will request a certificate from a Microsoft Certificate Authority"   << std::endl;
@@ -68,60 +69,23 @@ static void usage(const std::string& progname) {
     std::cerr << "        The \"Template name\" of the certificate template to request the"         << std::endl;
     std::cerr << "        certificate under. (Not the \"Template display name\")\n"                 << std::endl;
     std::cerr << "-r      csr path:"                                                                << std::endl;
-    std::cerr << "        Path to DER encoded certificate template file. Use openssl(1) to convert" << std::endl;
-    std::cerr << "        from base64 as needed.\n"                                                 << std::endl;
+    std::cerr << "        Path to the certificate request file.\n"                                  << std::endl;
     throw std::runtime_error("Incorrect usage");
 }
 
-bool isDerEncodedRequest(std::ifstream& file) {
-    if (!file) {
-        throw std::runtime_error("Invalid or closed file stream");
-    }
-
-    // Save the current position
-    std::streampos currentPos = file.tellg();
-
-    // Seek to the beginning of the file
-    file.seekg(0, std::ios::beg);
-    if (!file) {
-        throw std::runtime_error("Failed to seek to the beginning of the file");
-    }
-
-    // Read the first two bytes
-    unsigned char firstByte = 0, secondByte = 0;
-    file.read(reinterpret_cast<char*>(&firstByte), 1);
-    file.read(reinterpret_cast<char*>(&secondByte), 1);
-
-    // Restore the file pointer
-    file.seekg(currentPos);
-    if (!file) {
-        throw std::runtime_error("Failed to restore the original file position");
-    }
-
-    // Check if the bytes match the DER encoded request signature
-    return (firstByte == 0x30 && secondByte == 0x82);
-}
-
 // Load a file into a CertTransBlob
-CertTransBlob loadCsrFile(const std::string& filename, bool force) {
-    std::ifstream file(filename, std::ios::binary);
-    if (!file) {
-        throw std::runtime_error("Failed to open CSR file: " + filename);
+CertTransBlob loadCsrFile(const std::string& filename) {
+    try {
+        // Validate and convert the input file to DER
+        std::vector<unsigned char> derData = validateAndConvertRequest(filename);
+
+        // Assign the DER data to a CertTransBlob
+        CertTransBlob blob;
+        blob.assign(derData);
+        return blob;
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Error loading CSR file: " + std::string(e.what()));
     }
-
-    if (!isDerEncodedRequest(file) && !force) {
-        throw std::runtime_error("The input certificate request may not be a valid DER file. Pass -f to continue anyway.");
-    }
-
-    std::vector<BYTE> contents((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-
-    if (contents.empty()) {
-        throw std::runtime_error("CSR file is empty: " + filename);
-    }
-
-    CertTransBlob blob;
-    blob.assign(contents);
-    return blob;
 }
 
 static void get_ICertPassage_binding(
@@ -157,10 +121,9 @@ inline std::string prepareOutputName(const std::string& csr_path) {
 int main(int argc, char *argv[]) {
     int opt;
     std::string server, ca_name, template_name, csr_path;
-    bool force = false;
 
     // Parse command-line arguments
-    while ((opt = getopt(argc, argv, "s:c:t:r:f")) != -1) {
+    while ((opt = getopt(argc, argv, "s:c:t:r:")) != -1) {
         switch (opt) {
             case 's':
                 server = optarg;
@@ -173,9 +136,6 @@ int main(int argc, char *argv[]) {
                 break;
             case 'r':
                 csr_path = optarg;
-                break;
-            case 'f':
-                force = true;
                 break;
             default: // '?' case for invalid options
                 usage(argv[0]);
@@ -199,7 +159,7 @@ int main(int argc, char *argv[]) {
 
     std::vector<unsigned short> caName = utf8ToUnicode(ca_name);
     CertTransBlob attribsBlob = prepareTemplateName(template_name);
-    CertTransBlob csrBlob = loadCsrFile(csr_path, force);
+    CertTransBlob csrBlob = loadCsrFile(csr_path);
     std::string output_filename = prepareOutputName(csr_path);
 
     CERTTRANSBLOB pctbAttribs = attribsBlob.get();

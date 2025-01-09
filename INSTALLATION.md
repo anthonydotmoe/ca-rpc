@@ -108,7 +108,7 @@
 1. Install prerequsites
 
     ```bash
-    sudo apt install automake bison build-essential cmake flex git libkrb5-dev libtool m4
+    sudo apt install automake bison build-essential cmake flex git libkrb5-dev libssl-dev libtool m4
     ```
 
 1. Build & install `dcerpc`
