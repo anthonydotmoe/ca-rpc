@@ -234,36 +234,30 @@ int main(int argc, char *argv[]) {
     }
     DCETHREAD_ENDTRY
 
+    std::string disposition, dispositionMessage;
+    disposition = dispositionToString(pdwDisposition);
+    try {
+        dispositionMessage = Utf16leToString(pctbDispositionMessage);
+    } catch (const std::exception& e) {
+        dispositionMessage = "(unable to retrieve disposition message)";
+    }
+
     // Failure case
-    if (outstatus != 0) {
-        try {
-            std::cerr << "ERROR: CertServerRequest returned 0x" << std::hex << outstatus << std::endl;
-            std::cerr << "RequestId: " << pdwRequestId << std::endl;
-            std::cerr << "dwDisposition: "  << dispositionToString(pdwDisposition) << '(' << pdwDisposition << ')' << std::endl;
-            std::cerr << "DispositionMessage: \"" << Utf16leToString(pctbDispositionMessage) << '"' << std::endl;
-        } catch (const std::exception& e) {
-            rpc_binding_free(&ca_server, &status);
-            std::cerr << "Error retrieving error message...\n" << e.what() << std::endl;
-            exit(EXIT_FAILURE);
-        }
+    if (outstatus != 0 || pctbEncodedCert.cb == 0 || pctbEncodedCert.pb == nullptr) {
+        std::cerr << "ERROR: CertServerRequest returned 0x" << std::hex << outstatus << std::endl;
+        std::cerr << "RequestId: " << pdwRequestId << std::endl;
+        std::cerr << "dwDisposition: "  << disposition << '(' << pdwDisposition << ')' << std::endl;
+        std::cerr << "DispositionMessage: \"" << dispositionMessage << '"' << std::endl;
+        rpc_binding_free(&ca_server, &status);
+        exit(EXIT_FAILURE);
     }
 
     // Success case
     else {
-        if (pctbEncodedCert.cb == 0) {
-            std::cerr << "ERROR: Issued certificate is empty!" << std::endl;
-            std::cerr << "Request ID: " << pdwRequestId << std::endl;
-            std::cerr << "Disposition: "  << dispositionToString(pdwDisposition) << '(' << pdwDisposition << ')' << std::endl;
-            rpc_binding_free(&ca_server, &status);
-            exit(EXIT_FAILURE);
-        }
-        if (pctbEncodedCert.pb == nullptr) {
-            std::cerr << "ERROR: Issued certificate CERTTRANSBLOB points to NULL!" << std::endl;
-            std::cerr << "Request ID: " << pdwRequestId << std::endl;
-            std::cerr << "Disposition: "  << dispositionToString(pdwDisposition) << '(' << pdwDisposition << ')' << std::endl;
-            rpc_binding_free(&ca_server, &status);
-            exit(EXIT_FAILURE);
-        }
+        std::cout << "CertServerRequest returned 0x" << std::hex << outstatus << std::endl;
+        std::cout << "RequestId: " << pdwRequestId << std::endl;
+        std::cout << "dwDisposition: "  << disposition << '(' << pdwDisposition << ')' << std::endl;
+        std::cout << "DispositionMessage: \"" << dispositionMessage << '"' << std::endl;
 
         try {
             std::ofstream outputfile(output_filename, std::ios::out | std::ios::binary);
@@ -378,10 +372,10 @@ std::vector<BYTE> utf8ToUtf16le(const std::string& utf8) {
     }
 
     const char* input = utf8.c_str();
-    size_t input_bytes_left = utf8.size();
+    size_t input_bytes_left = utf8.size() + 1; // Include null terminator
     
-    // 2 bytes per UTF-8 character + null terminator
-    size_t output_bytes_left = (input_bytes_left + 1) * 2;
+    // 2 bytes per UTF-8 character
+    size_t output_bytes_left = input_bytes_left * 2;
     std::vector<BYTE> output(output_bytes_left);
     char* output_ptr = reinterpret_cast<char*>(output.data());
 
