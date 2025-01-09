@@ -3,7 +3,13 @@
 Perfrom a certificate request to a Windows Certification Authority using
 DCE/RPC with Kerberos authentication.
 
-# Building
+## Features
+
+- [x] Submits a certificate request to a CA
+- [ ] Saves the issued certificate
+- [ ] Accepts Base64 formatted CSR files
+
+## Building
 
 The [`dcerpc`](https://github.com/dcerpc/dcerpc) library is required for
 building this program. You need to build it with the `--enable-gss_negotiate`
