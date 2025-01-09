@@ -7,7 +7,7 @@ DCE/RPC with Kerberos authentication.
 
 - [x] Submits a certificate request to a CA
 - [x] Saves the issued certificate
-- [ ] Accepts Base64 formatted CSR files
+- [x] Accepts Base64 formatted CSR files
 
 ## Building
 
