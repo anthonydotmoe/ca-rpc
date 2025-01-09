@@ -136,6 +136,15 @@ void chk_dce_err(
     const std::string& text
 );
 
+void freeOutParamCERTTRANSBLOB(CERTTRANSBLOB& blob) {
+    unsigned32 status;
+    if (blob.pb) {
+        rpc_sm_client_free(blob.pb, &status);
+        blob.pb = nullptr;
+        blob.cb = 0;
+    }
+}
+
 std::string Utf16leToString(const CERTTRANSBLOB& ctbString);
 std::vector<unsigned short> utf8ToUnicode(const std::string& utf8);
 
@@ -211,7 +220,7 @@ int main(int argc, char *argv[]) {
 
     std::cout << "requesting certificate!" << std::endl;
 
-    DWORD outstatus;
+    DWORD outstatus = -1;
 
     DCETHREAD_TRY {
         outstatus = CertServerRequest(ca_server,
@@ -245,9 +254,13 @@ int main(int argc, char *argv[]) {
     // Failure case
     if (outstatus != 0 || pctbEncodedCert.cb == 0 || pctbEncodedCert.pb == nullptr) {
         std::cerr << "ERROR: CertServerRequest returned 0x" << std::hex << outstatus << std::endl;
-        std::cerr << "RequestId: " << pdwRequestId << std::endl;
-        std::cerr << "dwDisposition: "  << disposition << '(' << pdwDisposition << ')' << std::endl;
+        std::cerr << "RequestId: " << std::dec << pdwRequestId << std::endl;
+        std::cerr << "dwDisposition: "  << disposition << '(' << std::hex << pdwDisposition << ')' << std::endl;
         std::cerr << "DispositionMessage: \"" << dispositionMessage << '"' << std::endl;
+        
+        freeOutParamCERTTRANSBLOB(pctbCert);
+        freeOutParamCERTTRANSBLOB(pctbEncodedCert);
+        freeOutParamCERTTRANSBLOB(pctbDispositionMessage);
         rpc_binding_free(&ca_server, &status);
         exit(EXIT_FAILURE);
     }
@@ -255,8 +268,8 @@ int main(int argc, char *argv[]) {
     // Success case
     else {
         std::cout << "CertServerRequest returned 0x" << std::hex << outstatus << std::endl;
-        std::cout << "RequestId: " << pdwRequestId << std::endl;
-        std::cout << "dwDisposition: "  << disposition << '(' << pdwDisposition << ')' << std::endl;
+        std::cout << "RequestId: " << std::dec << pdwRequestId << std::endl;
+        std::cout << "dwDisposition: "  << disposition << '(' << std::hex << pdwDisposition << ')' << std::endl;
         std::cout << "DispositionMessage: \"" << dispositionMessage << '"' << std::endl;
 
         try {
@@ -266,12 +279,18 @@ int main(int argc, char *argv[]) {
         }
         catch (const std::exception& e) {
             std::cerr << "Error writing to output file: " << e.what() << std::endl;
+            freeOutParamCERTTRANSBLOB(pctbCert);
+            freeOutParamCERTTRANSBLOB(pctbEncodedCert);
+            freeOutParamCERTTRANSBLOB(pctbDispositionMessage);
             rpc_binding_free(&ca_server, &status);
             exit(EXIT_FAILURE);
         }
     }
 
     // Clean up
+    freeOutParamCERTTRANSBLOB(pctbCert);
+    freeOutParamCERTTRANSBLOB(pctbEncodedCert);
+    freeOutParamCERTTRANSBLOB(pctbDispositionMessage);
     rpc_binding_free(&ca_server, &status);
     exit(EXIT_SUCCESS);
 }
@@ -292,12 +311,11 @@ static void get_ICertPassage_binding(
     const std::string& hostname
 ) {
     unsigned_char_p_t string_binding = NULL;
-    error_status_t status;
+    error_status_t status, free_status;
 
     // Create a string binding given the parameters and resolve it to a full
     // binding handle using the endpoint mapper. The binding handle resolution
     // is handled by the runtime library.
-
     rpc_string_binding_compose(
         NULL,
         (unsigned_char_p_t)"ncacn_ip_tcp",
@@ -316,6 +334,10 @@ static void get_ICertPassage_binding(
         &status
     );
 
+    // Free the binding string first, then check the status of the bind
+    rpc_string_free(&string_binding, &free_status);
+    chk_dce_err(status, "rpc_string_free()");
+
     chk_dce_err(status, "rpc_binding_from_string_binding()");
 
     // Resolve the partial binding handle using the endpoint mapper
@@ -325,24 +347,6 @@ static void get_ICertPassage_binding(
         &status
     );
     chk_dce_err(status, "rpc_ep_resolve_binding()");
-
-    rpc_string_free(&string_binding, &status);
-    chk_dce_err(status, "rpc_string_free()");
-
-    // Get a printable version of the binding handle and echo to the user.
-    rpc_binding_to_string_binding(
-        *binding_handle,
-        (unsigned char **)&string_binding,
-        &status
-    );
-
-    chk_dce_err(status, "rpc_binding_to_string_binding()");
-
-    std::cout << "fully resolved binding for server is: " << string_binding << std::endl;
-
-    rpc_string_free(&string_binding, &status);
-
-    chk_dce_err(status, "rpc_string_free()");
 
     return;
 }
@@ -474,7 +478,7 @@ CertTransBlob prepareTemplateName(const std::string& template_name) {
 // This function either returns or fails and exits the program.
 void set_auth_info(rpc_binding_handle_t *binding_handle, const std::string& hostname) {
     unsigned32 authn_svc = rpc_c_authn_gss_mskrb;
-    unsigned32 protect_level = rpc_c_protect_level_pkt_integ;
+    unsigned32 protect_level = rpc_c_protect_level_pkt_privacy;
     unsigned32 authz_svc = rpc_c_authz_name;
     unsigned32 status;
 
