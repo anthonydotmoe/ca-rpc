@@ -18,36 +18,16 @@
 #include "cert_trans_blob.h"
 #include "req_input.h"
 
-enum class CrDisposition {
-    CR_DISP_INCOMPLETE = 0,
-    CR_DISP_ERROR = 0x1,
-    CR_DISP_DENIED = 0x2,
-    CR_DISP_ISSUED = 0x3,
-    CR_DISP_ISSUED_OUT_OF_BAND = 0x4,
-    CR_DISP_UNDER_SUBMISSION = 0x5,
-    CR_DISP_REVOKED = 0x6
-};
+CertTransBlob loadCsrFile(const std::string& filename);
+CertTransBlob prepareTemplateName(const std::string& template_name);
+std::string Utf16leToString(const CERTTRANSBLOB& ctbString);
+std::string dispositionToString(DWORD dwDisposition);
+std::vector<unsigned short> utf8ToUnicode(const std::string& utf8);
+void get_ICertPassage_binding(rpc_binding_handle_t* binding_handle, const std::string& hostname);
+void chk_dce_err(error_status_t ecode, const std::string& text);
+void freeOutParamCERTTRANSBLOB(CERTTRANSBLOB& blob);
+void set_auth_info(rpc_binding_handle_t * binding_handle, const std::string& hostname);
 
-std::string dispositionToString(DWORD dwDisposition) {
-    switch (dwDisposition) {
-        case 0x0:
-            return "CR_DISP_INCOMPLETE";
-        case 0x1:
-            return "CR_DISP_ERROR";
-        case 0x2:
-            return "CR_DISP_DENIED";
-        case 0x3:
-            return "CR_DISP_ISSUED";
-        case 0x4:
-            return "CR_DISP_ISSUED_OUT_OF_BAND";
-        case 0x5:
-            return "CR_DISP_UNDER_SUBMISSION";
-        case 0x6:
-            return "CR_DISP_REVOKE";
-        default:
-            return "UNKNOWN";
-    }
-}
 
 static void usage(const std::string& progname) {
     std::cerr << "usage: " << progname << " -s <server dns name> -c <name of CA> -t <template name> -r <csr path>" << std::endl << std::endl;
@@ -72,47 +52,6 @@ static void usage(const std::string& progname) {
     std::cerr << "        Path to the certificate request file.\n"                                  << std::endl;
     throw std::runtime_error("Incorrect usage");
 }
-
-// Load a file into a CertTransBlob
-CertTransBlob loadCsrFile(const std::string& filename) {
-    try {
-        // Validate and convert the input file to DER
-        std::vector<unsigned char> derData = validateAndConvertRequest(filename);
-
-        // Assign the DER data to a CertTransBlob
-        CertTransBlob blob;
-        blob.assign(derData);
-        return blob;
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Error loading CSR file: " + std::string(e.what()));
-    }
-}
-
-static void get_ICertPassage_binding(
-    rpc_binding_handle_t* binding_handle,
-    const std::string& hostname
-);
-
-void set_auth_info(rpc_binding_handle_t * binding_handle, const std::string& hostname);
-
-void chk_dce_err(
-    error_status_t ecode,
-    const std::string& text
-);
-
-void freeOutParamCERTTRANSBLOB(CERTTRANSBLOB& blob) {
-    unsigned32 status;
-    if (blob.pb) {
-        rpc_sm_client_free(blob.pb, &status);
-        blob.pb = nullptr;
-        blob.cb = 0;
-    }
-}
-
-std::string Utf16leToString(const CERTTRANSBLOB& ctbString);
-std::vector<unsigned short> utf8ToUnicode(const std::string& utf8);
-
-CertTransBlob prepareTemplateName(const std::string& template_name);
 
 inline std::string prepareOutputName(const std::string& csr_path) {
     return std::string(std::filesystem::path(csr_path).stem().string() + ".cer");
@@ -147,12 +86,11 @@ int main(int argc, char *argv[]) {
         usage(argv[0]);
     }
 
+    // Prepare to make remote call
+
     unsigned32 status;
     rpc_binding_handle_t ca_server;
-
-    get_ICertPassage_binding(&ca_server, server);
-
-    set_auth_info(&ca_server, server);
+    DWORD outstatus = -1;
 
     // Inputs
     DWORD dwFlags = REQUEST_TYPE_PKCS10;
@@ -178,9 +116,12 @@ int main(int argc, char *argv[]) {
     memset(&pctbEncodedCert, 0, sizeof(CERTTRANSBLOB));
     memset(&pctbDispositionMessage, 0, sizeof(CERTTRANSBLOB));
 
-    std::cout << "requesting certificate!" << std::endl;
+    // Create RPC binding
+    get_ICertPassage_binding(&ca_server, server);
+    set_auth_info(&ca_server, server);
 
-    DWORD outstatus = -1;
+    // Make the call!
+    std::cout << "requesting certificate!" << std::endl;
 
     DCETHREAD_TRY {
         outstatus = CertServerRequest(ca_server,
@@ -222,7 +163,7 @@ int main(int argc, char *argv[]) {
         freeOutParamCERTTRANSBLOB(pctbEncodedCert);
         freeOutParamCERTTRANSBLOB(pctbDispositionMessage);
         rpc_binding_free(&ca_server, &status);
-        exit(EXIT_FAILURE);
+        return EXIT_FAILURE;
     }
 
     // Success case
@@ -243,7 +184,7 @@ int main(int argc, char *argv[]) {
             freeOutParamCERTTRANSBLOB(pctbEncodedCert);
             freeOutParamCERTTRANSBLOB(pctbDispositionMessage);
             rpc_binding_free(&ca_server, &status);
-            exit(EXIT_FAILURE);
+            return EXIT_FAILURE;
         }
     }
 
@@ -252,7 +193,7 @@ int main(int argc, char *argv[]) {
     freeOutParamCERTTRANSBLOB(pctbEncodedCert);
     freeOutParamCERTTRANSBLOB(pctbDispositionMessage);
     rpc_binding_free(&ca_server, &status);
-    exit(EXIT_SUCCESS);
+    return EXIT_SUCCESS;
 }
 
 /*
@@ -266,7 +207,7 @@ parameters:
 
 Throws exceptions on DCERPC errors
 */
-static void get_ICertPassage_binding(
+void get_ICertPassage_binding(
     rpc_binding_handle_t* binding_handle,
     const std::string& hostname
 ) {
@@ -296,7 +237,7 @@ static void get_ICertPassage_binding(
 
     // Free the binding string first, then check the status of the bind
     rpc_string_free(&string_binding, &free_status);
-    chk_dce_err(status, "rpc_string_free()");
+    chk_dce_err(free_status, "rpc_string_free()");
 
     chk_dce_err(status, "rpc_binding_from_string_binding()");
 
@@ -443,8 +384,6 @@ void set_auth_info(rpc_binding_handle_t *binding_handle, const std::string& host
     unsigned32 status;
 
     std::string princname = "host/" + hostname;
-    
-    std::cout << "Setting auth info for binding handle with SPN: \"" << princname << '"' << std::endl;
 
     rpc_binding_set_auth_info(
         *binding_handle,
@@ -465,4 +404,49 @@ void set_auth_info(rpc_binding_handle_t *binding_handle, const std::string& host
     }
 
     return;
+}
+
+std::string dispositionToString(DWORD dwDisposition) {
+    switch (dwDisposition) {
+        case 0x0:
+            return "CR_DISP_INCOMPLETE";
+        case 0x1:
+            return "CR_DISP_ERROR";
+        case 0x2:
+            return "CR_DISP_DENIED";
+        case 0x3:
+            return "CR_DISP_ISSUED";
+        case 0x4:
+            return "CR_DISP_ISSUED_OUT_OF_BAND";
+        case 0x5:
+            return "CR_DISP_UNDER_SUBMISSION";
+        case 0x6:
+            return "CR_DISP_REVOKE";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+// Load a file into a CertTransBlob
+CertTransBlob loadCsrFile(const std::string& filename) {
+    try {
+        // Validate and convert the input file to DER
+        std::vector<unsigned char> derData = validateAndConvertRequest(filename);
+
+        // Assign the DER data to a CertTransBlob
+        CertTransBlob blob;
+        blob.assign(derData);
+        return blob;
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Error loading CSR file: " + std::string(e.what()));
+    }
+}
+
+void freeOutParamCERTTRANSBLOB(CERTTRANSBLOB& blob) {
+    unsigned32 status;
+    if (blob.pb) {
+        rpc_sm_client_free(blob.pb, &status);
+        blob.pb = nullptr;
+        blob.cb = 0;
+    }
 }
