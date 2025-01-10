@@ -9,25 +9,19 @@
 #include <compat/dcerpc.h>
 #include <dce/dcethread.h>
 
-#include <iconv.h>
-
 // Compiled from IDL files
 #include "ms-icpr.h"
 
-#include "requestflags.h"
 #include "cert_trans_blob.h"
+#include "encoding.h"
 #include "req_input.h"
+#include "requestflags.h"
+#include "rpc_client.h"
 
 CertTransBlob loadCsrFile(const std::string& filename);
 CertTransBlob prepareTemplateName(const std::string& template_name);
-std::string Utf16leToString(const CERTTRANSBLOB& ctbString);
 std::string dispositionToString(DWORD dwDisposition);
-std::vector<unsigned short> utf8ToUnicode(const std::string& utf8);
-void get_ICertPassage_binding(rpc_binding_handle_t* binding_handle, const std::string& hostname);
-void chk_dce_err(error_status_t ecode, const std::string& text);
 void freeOutParamCERTTRANSBLOB(CERTTRANSBLOB& blob);
-void set_auth_info(rpc_binding_handle_t * binding_handle, const std::string& hostname);
-
 
 static void usage(const std::string& progname) {
     std::cerr << "usage: " << progname << " -s <server dns name> -c <name of CA> -t <template name> -r <csr path>" << std::endl << std::endl;
@@ -50,7 +44,7 @@ static void usage(const std::string& progname) {
     std::cerr << "        certificate under. (Not the \"Template display name\")\n"                 << std::endl;
     std::cerr << "-r      csr path:"                                                                << std::endl;
     std::cerr << "        Path to the certificate request file.\n"                                  << std::endl;
-    throw std::runtime_error("Incorrect usage");
+    exit(EXIT_FAILURE);
 }
 
 inline std::string prepareOutputName(const std::string& csr_path) {
@@ -82,15 +76,11 @@ int main(int argc, char *argv[]) {
     }
 
     // Check for missing required arguments
-    if (server.empty() || ca_name.empty() || template_name.empty() | csr_path.empty()) {
+    if (server.empty() || ca_name.empty() || template_name.empty() || csr_path.empty()) {
         usage(argv[0]);
     }
 
     // Prepare to make remote call
-
-    unsigned32 status;
-    rpc_binding_handle_t ca_server;
-    DWORD outstatus = -1;
 
     // Inputs
     DWORD dwFlags = REQUEST_TYPE_PKCS10;
@@ -105,6 +95,7 @@ int main(int argc, char *argv[]) {
     unsigned short *pwszAuthority = caName.data();
 
     // Outputs
+    DWORD outstatus = -1;
     CERTTRANSBLOB pctbCert;
     CERTTRANSBLOB pctbEncodedCert;
     CERTTRANSBLOB pctbDispositionMessage;
@@ -117,14 +108,13 @@ int main(int argc, char *argv[]) {
     memset(&pctbDispositionMessage, 0, sizeof(CERTTRANSBLOB));
 
     // Create RPC binding
-    get_ICertPassage_binding(&ca_server, server);
-    set_auth_info(&ca_server, server);
+    RpcBinding binding(server);
 
     // Make the call!
-    std::cout << "requesting certificate!" << std::endl;
+    std::cout << "Requesting certificate!" << std::endl;
 
     DCETHREAD_TRY {
-        outstatus = CertServerRequest(ca_server,
+        outstatus = CertServerRequest(binding.handle(),
             dwFlags,
             pwszAuthority,              // [in]  A null-terminated unicode string that contains the name of the CA.
             &pdwRequestId,              // [out] CA issued request ID
@@ -137,17 +127,16 @@ int main(int argc, char *argv[]) {
         );
     }
     DCETHREAD_CATCH_ALL(thread_exc) {
-        printf("ERROR %s(0x%lx): Verify that you have a Kerberos TGT.\n",
-            dcethread_exc_getname(thread_exc),
-            dcethread_exc_getstatus(thread_exc)
-        );
+        std::cerr << "ERROR " << dcethread_exc_getname(thread_exc)
+                  << "(0x" << std::hex << dcethread_exc_getstatus(thread_exc)
+                  << "): Verify that you have a Kerberos TGT." << std::endl;
     }
     DCETHREAD_ENDTRY
 
     std::string disposition, dispositionMessage;
     disposition = dispositionToString(pdwDisposition);
     try {
-        dispositionMessage = Utf16leToString(pctbDispositionMessage);
+        dispositionMessage = utf16leToString(pctbDispositionMessage);
     } catch (const std::exception& e) {
         dispositionMessage = "(unable to retrieve disposition message)";
     }
@@ -162,7 +151,6 @@ int main(int argc, char *argv[]) {
         freeOutParamCERTTRANSBLOB(pctbCert);
         freeOutParamCERTTRANSBLOB(pctbEncodedCert);
         freeOutParamCERTTRANSBLOB(pctbDispositionMessage);
-        rpc_binding_free(&ca_server, &status);
         return EXIT_FAILURE;
     }
 
@@ -183,7 +171,6 @@ int main(int argc, char *argv[]) {
             freeOutParamCERTTRANSBLOB(pctbCert);
             freeOutParamCERTTRANSBLOB(pctbEncodedCert);
             freeOutParamCERTTRANSBLOB(pctbDispositionMessage);
-            rpc_binding_free(&ca_server, &status);
             return EXIT_FAILURE;
         }
     }
@@ -192,176 +179,7 @@ int main(int argc, char *argv[]) {
     freeOutParamCERTTRANSBLOB(pctbCert);
     freeOutParamCERTTRANSBLOB(pctbEncodedCert);
     freeOutParamCERTTRANSBLOB(pctbDispositionMessage);
-    rpc_binding_free(&ca_server, &status);
     return EXIT_SUCCESS;
-}
-
-/*
-get_ICertPassage_binding()
-
-Gets a binding handle to an RPC interface.
-
-parameters:
-    [out]   binding_handle
-    [in]    hostname            Internet hostname where server lives
-
-Throws exceptions on DCERPC errors
-*/
-void get_ICertPassage_binding(
-    rpc_binding_handle_t* binding_handle,
-    const std::string& hostname
-) {
-    unsigned_char_p_t string_binding = NULL;
-    error_status_t status, free_status;
-
-    // Create a string binding given the parameters and resolve it to a full
-    // binding handle using the endpoint mapper. The binding handle resolution
-    // is handled by the runtime library.
-    rpc_string_binding_compose(
-        NULL,
-        (unsigned_char_p_t)"ncacn_ip_tcp",
-        (unsigned_char_p_t)hostname.c_str(),
-        NULL,
-        NULL,
-        &string_binding,
-        &status
-    );
-
-    chk_dce_err(status, "rpc_string_binding_compose()");
-
-    rpc_binding_from_string_binding(
-        string_binding,
-        binding_handle,
-        &status
-    );
-
-    // Free the binding string first, then check the status of the bind
-    rpc_string_free(&string_binding, &free_status);
-    chk_dce_err(free_status, "rpc_string_free()");
-
-    chk_dce_err(status, "rpc_binding_from_string_binding()");
-
-    // Resolve the partial binding handle using the endpoint mapper
-    rpc_ep_resolve_binding(
-        *binding_handle,
-        ICertPassage_v0_0_c_ifspec,
-        &status
-    );
-    chk_dce_err(status, "rpc_ep_resolve_binding()");
-
-    return;
-}
-
-void chk_dce_err(
-    error_status_t ecode,
-    const std::string& text
-) {
-    dce_error_string_t errstr;
-    int error_status;
-    
-    if (ecode != error_status_ok)
-    {
-        dce_error_inq_text(ecode, errstr, &error_status);
-        if (error_status == error_status_ok)
-            throw std::runtime_error("ERROR. <" + text + "> error code = 0x" + std::to_string(ecode) + " = <" + std::string(errstr) + ">");
-        else
-            throw std::runtime_error("ERROR. <" + text + "> error code = 0x" + std::to_string(ecode));
-    }
-}
-
-std::vector<BYTE> utf8ToUtf16le(const std::string& utf8) {
-    // Initialize iconv for UTF-8 to UTF-16LE conversion
-    iconv_t conv = iconv_open("UTF-16LE", "UTF-8");
-    if (conv == (iconv_t)-1) {
-        throw std::runtime_error("iconv_open failed: Cannot initialize converter");
-    }
-
-    const char* input = utf8.c_str();
-    size_t input_bytes_left = utf8.size() + 1; // Include null terminator
-    
-    // 2 bytes per UTF-8 character
-    size_t output_bytes_left = input_bytes_left * 2;
-    std::vector<BYTE> output(output_bytes_left);
-    char* output_ptr = reinterpret_cast<char*>(output.data());
-
-    // Perform the conversion
-    size_t result = iconv(conv, const_cast<char**>(&input), &input_bytes_left, &output_ptr, &output_bytes_left);
-    if (result == (size_t)-1) {
-        iconv_close(conv);
-        throw std::runtime_error("iconv conversion failed");
-    }
-
-    // Calculate the actual size of the converted data
-    output.resize(output.size() - output_bytes_left);
-
-    // Clean up iconv
-    iconv_close(conv);
-
-    return output;
-}
-
-std::vector<unsigned short> utf8ToUnicode(const std::string& utf8) {
-    // Initialize iconv for UTF-8 to UTF-16LE conversion
-    iconv_t conv = iconv_open("UTF-16LE", "UTF-8");
-    if (conv == (iconv_t)-1) {
-        throw std::runtime_error("iconv_open failed: Cannot initialize converter");
-    }
-
-    const char* input = utf8.c_str();
-    size_t input_bytes_left = utf8.size();
-    
-    // 2 bytes per UTF-8 character + null terminator
-    size_t output_bytes_left = (input_bytes_left + 1) * 2;
-    std::vector<unsigned short> output(input_bytes_left + 1);
-    char* output_ptr = reinterpret_cast<char*>(output.data());
-
-    // Perform the conversion
-    size_t result = iconv(conv, const_cast<char**>(&input), &input_bytes_left, &output_ptr, &output_bytes_left);
-    if (result == (size_t)-1) {
-        iconv_close(conv);
-        throw std::runtime_error("iconv conversion failed");
-    }
-
-    // Calculate the actual size of the converted data
-    //output.resize(output.size() - output_bytes_left);
-
-    // Clean up iconv
-    iconv_close(conv);
-
-    return output;
-}
-
-std::string Utf16leToString(const CERTTRANSBLOB& ctbString) {
-    if (!ctbString.pb || ctbString.cb == 0) {
-        return std::string();
-    }
-
-    // Initialize iconv
-    iconv_t conv = iconv_open("UTF-8", "UTF-16LE");
-    if (conv == (iconv_t)-1) {
-        throw std::runtime_error("iconv_open failed: Cannot initialize converter");
-    }
-
-    // Input buffer: UTF-16LE data
-    const char* input = reinterpret_cast<const char*>(ctbString.pb);
-    size_t input_bytes_left = ctbString.cb;
-
-    // Estimate output size: UTF-8 is twice the size maybe sometimes hopefully.
-    size_t output_bytes_left = input_bytes_left * 2;
-    std::vector<char> output_buffer(output_bytes_left);
-    char* output_ptr = output_buffer.data();
-
-    // Perform the conversion
-    size_t result = iconv(conv, const_cast<char**>(&input), &input_bytes_left, &output_ptr, &output_bytes_left);
-    if (result == (size_t)-1) {
-        iconv_close(conv);
-        throw std::runtime_error("iconv conversion failed");
-    }
-
-    // Clean up iconv
-    iconv_close(conv);
-
-    return std::string(output_buffer.data(), output_buffer.size() - output_bytes_left);
 }
 
 CertTransBlob prepareTemplateName(const std::string& template_name) {
@@ -374,36 +192,6 @@ CertTransBlob prepareTemplateName(const std::string& template_name) {
     CertTransBlob blob;
     blob.assign(utf16_data);
     return blob;
-}
-
-// This function either returns or fails and exits the program.
-void set_auth_info(rpc_binding_handle_t *binding_handle, const std::string& hostname) {
-    unsigned32 authn_svc = rpc_c_authn_gss_mskrb;
-    unsigned32 protect_level = rpc_c_protect_level_pkt_privacy;
-    unsigned32 authz_svc = rpc_c_authz_name;
-    unsigned32 status;
-
-    std::string princname = "host/" + hostname;
-
-    rpc_binding_set_auth_info(
-        *binding_handle,
-        (unsigned_char_p_t)princname.c_str(),
-        protect_level,
-        authn_svc,
-        NULL,
-        authz_svc,
-        &status
-    );
-
-    try {
-        chk_dce_err(status, "rpc_binding_set_auth_info()");
-    }
-    catch(const std::exception& e) {
-        rpc_binding_free(binding_handle, &status);
-        throw std::runtime_error("Unable to set auth info on rpc binding handle. Double check that \"" + princname + "\" is the correct SPN. Exiting.");
-    }
-
-    return;
 }
 
 std::string dispositionToString(DWORD dwDisposition) {

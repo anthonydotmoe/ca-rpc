@@ -53,7 +53,9 @@ target_include_directories(ms-icpr PUBLIC "${GENERATED_DIR}")
 add_executable(ca-rpc
     src/main.cpp
     src/cert_trans_blob.cpp
+    src/encoding.cpp
     src/req_input.cpp
+    src/rpc_client.cpp
 )
 
 find_package(OpenSSL REQUIRED)

@@ -1,5 +1,4 @@
-#ifndef __REQUESTFLAGS_H__
-#define __REQUESTFLAGS_H__
+#pragma once
 
 // ExtendedFlags values
 #define CERT_REQUEST_FLAG_CT                (1 << 5)
@@ -18,5 +17,3 @@
 #define REQUEST_TYPE_CMC                 (0x04 << 16)  // Certificate Management Messages over CMS (CMC).
 #define REQUEST_TYPE_ATTESTATION         (0x05 << 16)  // Response to the attestation CAChallenge.
 #define REQUEST_TYPE_SCT_LIST            (0x06 << 16)  // SignedCertificateTimestampList structure.
-
-#endif /* __REQUESTFLAGS_H__ */
